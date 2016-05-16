@@ -2,9 +2,11 @@ require "test_helper"
 require "active_record"
 require "reform"
 require "reform/rails"
+require "pry"
 
 ActiveRecord::Base.establish_connection(adapter: "sqlite3", database: ":memory:")
 ActiveRecord::Base.connection.create_table(:records) { |t| t.text :attachment_data }
+ActiveRecord::Base.connection.create_table(:nested_records) { |t| t.text(:attachment_data); t.belongs_to(:record) }
 ActiveRecord::Base.raise_in_transactional_callbacks = true
 
 describe "the reform plugin" do
@@ -17,9 +19,19 @@ describe "the reform plugin" do
     record_class = Object.const_set("Record", Class.new(ActiveRecord::Base))
     record_class.table_name = :records
     record_class.include @uploader.class[:attachment]
+    record_class.has_many :nested_records
+
+    nested_class = Object.const_set("NestedRecord", Class.new(ActiveRecord::Base))
+    nested_class.table_name = :nested_records
+    nested_class.include @uploader.class[:attachment]
+    nested_class.belongs_to :record
+
+    nested_form_class = Class.new(Reform::Form)
+    nested_form_class.include @uploader.class[:attachment]
 
     form_class = Class.new(Reform::Form)
     form_class.include @uploader.class[:attachment]
+    form_class.collection :nested_records, populate_if_empty: NestedRecord, form: nested_form_class
 
     @record = record_class.new
     @form = form_class.new(@record)
@@ -28,6 +40,7 @@ describe "the reform plugin" do
   after do
     @record.class.delete_all
     Object.send(:remove_const, "Record")
+    Object.send(:remove_const, "NestedRecord")
   end
 
   it "prepopulates attachment" do
@@ -55,6 +68,20 @@ describe "the reform plugin" do
     @form.validate(attachment: StringIO.new)
     @form.sync
     assert_kind_of Shrine::UploadedFile, @record.attachment
+  end
+
+  it "syncs attachment on nested forms" do
+    attributes = {
+      'nested_records_attributes' => {
+        '1' => {
+          'attachment': StringIO.new
+        }
+      }
+    }
+    @form.validate(attributes)
+    @form.sync
+    assert_kind_of Shrine::UploadedFile, @form.nested_records.first.attachment
+    assert_kind_of Shrine::UploadedFile, @record.nested_records.first.attachment
   end
 
   it "doesn't sync when attachment wasn't set" do
